@@ -17,7 +17,7 @@ import (
 )
 
 type verifyTokenFunc func(token, pubkeyHex string) int32
-type hardeningProbeFunc func() int32
+type registerVerifyFnFunc func(realFnAddr uintptr)
 
 // Status — результат верификации токена, зеркало кодов возврата
 // keyforge_verify_token в core/rust/src/lib.rs.
@@ -60,9 +60,12 @@ func (m Mode) String() string {
 }
 
 // Verifier — загруженный core (обязательно) + опционально hardening.
+// В hardened-режиме verify указывает на keyforge_hardened_verify_token
+// из hardening.so (которая сама прыгает в core через зарегистрированный
+// адрес), а не прямо на core — весь смысл в том, чтобы реальный вызов
+// проверки шёл через трамплин, а не напрямую.
 type Verifier struct {
 	verify verifyTokenFunc
-	probe  hardeningProbeFunc
 	mode   Mode
 }
 
@@ -94,6 +97,11 @@ func hardeningLibName() string {
 
 // New грузит core-библиотеку из libDir (обязательно) и пытается подгрузить
 // hardening-слой из того же каталога (best-effort — отсутствие не ошибка).
+//
+// Если hardening найден, SDK передаёт ему реальный адрес core-функции
+// (через Dlsym — это тот самый сырой указатель, который трамплин внутри
+// hardening.so подставит для финального jmp) и дальше вызывает проверку
+// через hardened-точку входа, а не прямо core.
 func New(libDir string) (*Verifier, error) {
 	corePath := filepath.Join(libDir, coreLibName())
 	coreLib, err := purego.Dlopen(corePath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
@@ -111,12 +119,23 @@ func New(libDir string) (*Verifier, error) {
 		return v, nil
 	}
 
-	var probe hardeningProbeFunc
-	purego.RegisterLibFunc(&probe, hardeningLib, "hardening_probe")
-	if probe() == 1 {
-		v.probe = probe
-		v.mode = ModeHardened
+	realVerifyAddr, err := purego.Dlsym(coreLib, "keyforge_verify_token")
+	if err != nil || realVerifyAddr == 0 {
+		// core загружен, но символ не резолвится — деградируем в open-core,
+		// а не паникуем: нет смысла требовать hardening там, где сам core
+		// в нестандартном состоянии.
+		return v, nil
 	}
+
+	var register registerVerifyFnFunc
+	purego.RegisterLibFunc(&register, hardeningLib, "keyforge_hardening_register_verify_fn")
+	register(realVerifyAddr)
+
+	var hardenedVerify verifyTokenFunc
+	purego.RegisterLibFunc(&hardenedVerify, hardeningLib, "keyforge_hardened_verify_token")
+
+	v.verify = hardenedVerify
+	v.mode = ModeHardened
 
 	return v, nil
 }
