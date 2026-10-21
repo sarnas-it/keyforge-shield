@@ -29,12 +29,19 @@ const (
 	StatusBadSignature Status = 0
 	StatusValid        Status = 1
 	StatusExpired      Status = 2
+	// StatusGrace — подпись верна, срок истёк, но ещё в пределах
+	// grace_period_secs из токена. Не повод останавливать работу —
+	// см. Guard() ниже, который пропускает Grace как Valid и оставляет
+	// продукту решать, что показать/урезать.
+	StatusGrace Status = 3
 )
 
 func (s Status) String() string {
 	switch s {
 	case StatusValid:
 		return "valid"
+	case StatusGrace:
+		return "grace"
 	case StatusExpired:
 		return "expired"
 	case StatusBadSignature:
@@ -158,10 +165,14 @@ func (v *Verifier) Verify(token, pubkeyHex string) Status {
 }
 
 // Guard оборачивает fn проверкой лицензии: перед вызовом fn проверяет
-// токен и, если статус не Valid, вызывает onFail вместо fn. Снимает с
-// клиента необходимость писать `if status := verifier.Verify(...); ...`
-// в каждом месте, которое нужно защитить — остаётся просто решить, ЧТО
-// оборачивать, не писать boilerplate самой проверки на каждом месте.
+// токен и, если статус не Valid и не Grace, вызывает onFail вместо fn.
+// Grace пропускается как Valid осознанно — токен это и означает "мягкая
+// деградация, не крах"; продукт узнаёт о Grace через StartAutoRecheck
+// (см. ниже) и сам решает, что показать/урезать, а не получает хард-стоп
+// от самого Guard. Снимает с клиента необходимость писать
+// `if status := verifier.Verify(...); ...` в каждом месте, которое нужно
+// защитить — остаётся просто решить, ЧТО оборачивать, не писать
+// boilerplate самой проверки на каждом месте.
 //
 // Это не делает точки вызова непредсказуемыми — клиент всё равно сам
 // решает, какие функции оборачивать, и это видно по коду продукта. Для
@@ -169,11 +180,12 @@ func (v *Verifier) Verify(token, pubkeyHex string) Status {
 // расставляет это автоматически (отдельная, более крупная задача,
 // не часть этого SDK сейчас).
 func (v *Verifier) Guard(token, pubkeyHex string, onFail func(Status), fn func()) {
-	if status := v.Verify(token, pubkeyHex); status != StatusValid {
+	switch status := v.Verify(token, pubkeyHex); status {
+	case StatusValid, StatusGrace:
+		fn()
+	default:
 		onFail(status)
-		return
 	}
-	fn()
 }
 
 // StartAutoRecheck поднимает фоновую горутину, которая вызывает Verify()

@@ -6,7 +6,7 @@
 // и не требует её присутствия.
 
 mod token;
-pub use token::{encode_token, TokenPayload, TokenStatus};
+pub use token::{encode_token, SeatMode, TokenPayload, TokenStatus};
 
 use ed25519_dalek::VerifyingKey;
 use std::ffi::CStr;
@@ -28,7 +28,8 @@ fn decode_hex32(s: &str) -> Option<[u8; 32]> {
 /// Проверяет лицензионный токен против публичного ключа (hex, 32 байта) и
 /// текущего времени. Код возврата:
 ///   1  — валиден
-///   2  — подпись верна, но токен просрочен
+///   3  — подпись верна, токен просрочен, но в пределах grace_period_secs
+///   2  — подпись верна, но токен просрочен (вне grace-периода)
 ///   0  — подпись неверна
 ///  -1  — вход не распознан (null-указатель, невалидный hex-ключ, "мусор")
 ///
@@ -52,6 +53,7 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 
     match status {
         Some(TokenStatus::Valid) => 1,
+        Some(TokenStatus::Grace) => 3,
         Some(TokenStatus::Expired) => 2,
         Some(TokenStatus::BadSignature) => 0,
         Some(TokenStatus::Malformed) | None => -1,
@@ -61,9 +63,14 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 /// Версия ABI-контракта core-библиотеки. Hardening-слой при загрузке
 /// проверяет совместимость через эту константу, а не наоборот — core
 /// ничего не знает про hardening и не ссылается на него напрямую.
+///
+/// 3: добавлен код возврата 3 (TokenStatus::Grace) и поля payload
+/// grace_period_secs/seat_mode — существующие коды 1/2/0/-1 не менялись,
+/// это аддитивное расширение, но версия бита всё равно поднята, чтобы
+/// hardening-слой мог логировать факт обновления контракта.
 #[no_mangle]
 pub extern "C" fn keyforge_core_abi_version() -> i32 {
-    2
+    3
 }
 
 #[cfg(test)]
@@ -83,6 +90,8 @@ mod ffi_tests {
             license_id: "seat-ffi".into(),
             issued_at: 0,
             expires_at: now_unix() + 3600,
+            grace_period_secs: 0,
+            seat_mode: SeatMode::NamedUsers { count: 1 },
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
@@ -109,6 +118,29 @@ mod ffi_tests {
 
     #[test]
     fn reports_abi_version() {
-        assert_eq!(keyforge_core_abi_version(), 2);
+        assert_eq!(keyforge_core_abi_version(), 3);
+    }
+
+    #[test]
+    fn ffi_reports_grace_status() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let payload = TokenPayload {
+            product: "demo".into(),
+            edition: "pro".into(),
+            client: "ffi-test".into(),
+            license_id: "seat-ffi-grace".into(),
+            issued_at: 0,
+            expires_at: now_unix().saturating_sub(10), // уже истёк
+            grace_period_secs: 3600,                   // но внутри grace
+            seat_mode: SeatMode::Unbound,
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let signature = signing_key.sign(&payload_bytes);
+        let token = token::encode_token(&payload, &signature);
+
+        let token_c = CString::new(token).unwrap();
+        let pubkey_c = CString::new(hex::encode(signing_key.verifying_key().to_bytes())).unwrap();
+
+        assert_eq!(keyforge_verify_token(token_c.as_ptr(), pubkey_c.as_ptr()), 3);
     }
 }

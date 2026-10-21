@@ -31,6 +31,30 @@ pub struct TokenPayload {
     pub license_id: String,
     pub issued_at: u64,
     pub expires_at: u64,
+    /// Сколько секунд после `expires_at` токен ещё даёт `TokenStatus::Grace`
+    /// вместо `Expired`. 0 — жёсткий стоп в момент истечения. Не ноль —
+    /// мягкая деградация (см. философию "repair вместо краша" в
+    /// hardening-слое): продукт решает сам, что показать/урезать в Grace,
+    /// core только сообщает статус, не навязывает поведение.
+    pub grace_period_secs: u64,
+    /// Ось "количество" минимального набора keyforge: именованные места,
+    /// привязка к устройству или безлимит. Concurrent/floating-лицензии
+    /// сюда не входят осознанно — им нужен stateful lease-сервер (учёт
+    /// активных сессий), а не просто подписанное поле; это отдельный
+    /// компонент keyforge, не часть offline-протокола токена.
+    pub seat_mode: SeatMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SeatMode {
+    /// Фиксированное число именованных пользователей/мест, зашитое в токен.
+    NamedUsers { count: u32 },
+    /// Привязка к конкретному устройству (hardware fingerprint), для
+    /// офлайн-активации без сервера.
+    DeviceLocked { fingerprint: String },
+    /// Без ограничения по количеству (сайт-лицензия и т.п.).
+    Unbound,
 }
 
 impl TokenPayload {
@@ -44,6 +68,9 @@ impl TokenPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenStatus {
     Valid,
+    /// Истёк по `expires_at`, но ещё в пределах `grace_period_secs` —
+    /// подпись верна, продукт сам решает, что урезать/показать.
+    Grace,
     Expired,
     BadSignature,
     Malformed,
@@ -82,11 +109,16 @@ pub fn verify(token: &str, public_key: &VerifyingKey, now_unix: u64) -> TokenSta
         return TokenStatus::Malformed;
     };
 
-    if now_unix > payload.expires_at {
-        return TokenStatus::Expired;
+    if now_unix <= payload.expires_at {
+        return TokenStatus::Valid;
     }
 
-    TokenStatus::Valid
+    let grace_deadline = payload.expires_at.saturating_add(payload.grace_period_secs);
+    if now_unix <= grace_deadline {
+        return TokenStatus::Grace;
+    }
+
+    TokenStatus::Expired
 }
 
 #[cfg(test)]
@@ -107,6 +139,8 @@ mod tests {
             license_id: "seat-0001".into(),
             issued_at: 1_700_000_000,
             expires_at,
+            grace_period_secs: 0,
+            seat_mode: SeatMode::NamedUsers { count: 1 },
         }
     }
 
@@ -182,6 +216,87 @@ mod tests {
         assert_eq!(
             verify(&token, &signing_key.verifying_key(), 1_800_000_000),
             TokenStatus::Valid
+        );
+    }
+
+    #[test]
+    fn expired_but_within_grace_period_is_grace() {
+        let signing_key = test_keypair();
+        let mut payload = test_payload(1_000);
+        payload.grace_period_secs = 500;
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        // 1_300 > expires_at(1_000), но <= expires_at + grace(1_500).
+        let status = verify(&token, &signing_key.verifying_key(), 1_300);
+        assert_eq!(status, TokenStatus::Grace);
+    }
+
+    #[test]
+    fn past_grace_period_is_expired() {
+        let signing_key = test_keypair();
+        let mut payload = test_payload(1_000);
+        payload.grace_period_secs = 500;
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        let status = verify(&token, &signing_key.verifying_key(), 1_600);
+        assert_eq!(status, TokenStatus::Expired);
+    }
+
+    #[test]
+    fn zero_grace_period_expires_immediately() {
+        let signing_key = test_keypair();
+        let payload = test_payload(1_000); // grace_period_secs: 0 из test_payload
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        let status = verify(&token, &signing_key.verifying_key(), 1_001);
+        assert_eq!(status, TokenStatus::Expired);
+    }
+
+    #[test]
+    fn seat_mode_round_trips_through_signed_payload() {
+        // seat_mode не участвует в verify()-логике напрямую (это дело
+        // продукта-интегратора), но обязан переживать json-round-trip и
+        // входить в подписанные байты как и любое другое поле payload.
+        let signing_key = test_keypair();
+        for mode in [
+            SeatMode::NamedUsers { count: 5 },
+            SeatMode::DeviceLocked { fingerprint: "hw-abc123".into() },
+            SeatMode::Unbound,
+        ] {
+            let mut payload = test_payload(2_000_000_000);
+            payload.seat_mode = mode.clone();
+            let signature = signing_key.sign(&payload.to_json_bytes());
+            let token = encode_token(&payload, &signature);
+
+            assert_eq!(
+                verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+                TokenStatus::Valid
+            );
+
+            let (payload_bytes, _) = decode_token(&token).unwrap();
+            let decoded: TokenPayload = serde_json::from_slice(&payload_bytes).unwrap();
+            assert_eq!(decoded.seat_mode, mode);
+        }
+    }
+
+    #[test]
+    fn tampering_with_seat_mode_breaks_signature() {
+        // Как и license_id, seat_mode входит в подписанный payload целиком —
+        // нельзя переклеить "named:1" на "unbound" без приватного ключа.
+        let signing_key = test_keypair();
+        let payload = test_payload(2_000_000_000);
+        let signature = signing_key.sign(&payload.to_json_bytes());
+
+        let mut forged = payload.clone();
+        forged.seat_mode = SeatMode::Unbound;
+        let forged_token = encode_token(&forged, &signature); // та же подпись
+
+        assert_eq!(
+            verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::BadSignature
         );
     }
 
