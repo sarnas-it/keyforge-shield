@@ -6,7 +6,7 @@
 // и не требует её присутствия.
 
 mod token;
-pub use token::{encode_token, SeatMode, TokenPayload, TokenStatus};
+pub use token::{encode_token, SeatMode, TokenPayload, TokenStatus, UsageQuota};
 
 use ed25519_dalek::VerifyingKey;
 use std::ffi::CStr;
@@ -68,9 +68,11 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 /// grace_period_secs/seat_mode — существующие коды 1/2/0/-1 не менялись,
 /// это аддитивное расширение, но версия бита всё равно поднята, чтобы
 /// hardening-слой мог логировать факт обновления контракта.
+/// 4: добавлено поле payload usage_quota (Option) — тоже аддитивно,
+/// коды возврата не менялись.
 #[no_mangle]
 pub extern "C" fn keyforge_core_abi_version() -> i32 {
-    3
+    4
 }
 
 #[cfg(test)]
@@ -92,6 +94,7 @@ mod ffi_tests {
             expires_at: now_unix() + 3600,
             grace_period_secs: 0,
             seat_mode: SeatMode::NamedUsers { count: 1 },
+            usage_quota: None,
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
@@ -118,7 +121,7 @@ mod ffi_tests {
 
     #[test]
     fn reports_abi_version() {
-        assert_eq!(keyforge_core_abi_version(), 3);
+        assert_eq!(keyforge_core_abi_version(), 4);
     }
 
     #[test]
@@ -133,6 +136,7 @@ mod ffi_tests {
             expires_at: now_unix().saturating_sub(10), // уже истёк
             grace_period_secs: 3600,                   // но внутри grace
             seat_mode: SeatMode::Unbound,
+            usage_quota: None,
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);

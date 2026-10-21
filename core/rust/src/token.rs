@@ -43,6 +43,37 @@ pub struct TokenPayload {
     /// активных сессий), а не просто подписанное поле; это отдельный
     /// компонент keyforge, не часть offline-протокола токена.
     pub seat_mode: SeatMode,
+    /// Ось "объём использования": лимит на метрику, которую считает сам
+    /// продукт (API-вызовы, обработанные документы, что угодно, что
+    /// решит продукт-интегратор — core не знает семантику metric и не
+    /// считает потребление). `None` — без учёта использования.
+    ///
+    /// ВАЖНО, отличие от seat_mode/expires_at: те проверяются по
+    /// неизменному факту (текущее время, зашитое число мест) — здесь же
+    /// "сколько уже потрачено" это состояние, которое накапливается на
+    /// стороне клиента, а не в подписанном payload. core переносит
+    /// только ЛИМИТ (тамперпруф, подписан), не текущий остаток. Для
+    /// самого счётчика потребления см. UsageCounter в Go SDK —
+    /// локальное состояние на диске клиента, которое атакующий технически
+    /// может стереть/откатить (удалить файл счётчика). Это сознательный
+    /// компромисс уровня "справедливость, не неуязвимость" (см.
+    /// обсуждение бизнес-модели) — для жёсткого принуждения нужен
+    /// online-тип ключей с серверным счётчиком, не реализован.
+    pub usage_quota: Option<UsageQuota>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageQuota {
+    /// Название метрики — свободная строка, смысл знает только продукт
+    /// (например "api_calls", "documents_processed"). core её не
+    /// интерпретирует, только переносит как часть подписанных данных.
+    pub metric: String,
+    pub limit: u64,
+    /// `None` — лимит на весь срок действия токена (не сбрасывается).
+    /// `Some(secs)` — скользящее окно длиной secs (например ~2_592_000
+    /// для "в месяц"); отсчёт окна и сброс счётчика — на стороне клиента
+    /// (см. UsageCounter в Go SDK), core не хранит состояние окна.
+    pub period_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +172,7 @@ mod tests {
             expires_at,
             grace_period_secs: 0,
             seat_mode: SeatMode::NamedUsers { count: 1 },
+            usage_quota: None,
         }
     }
 
@@ -297,6 +329,50 @@ mod tests {
         assert_eq!(
             verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
             TokenStatus::BadSignature
+        );
+    }
+
+    #[test]
+    fn usage_quota_round_trips_through_signed_payload() {
+        // Как и seat_mode: core не интерпретирует usage_quota, но обязан
+        // переносить его как есть через json + подпись.
+        let signing_key = test_keypair();
+        for quota in [
+            None,
+            Some(UsageQuota { metric: "api_calls".into(), limit: 10_000, period_secs: Some(2_592_000) }),
+            Some(UsageQuota { metric: "documents_processed".into(), limit: 500, period_secs: None }),
+        ] {
+            let mut payload = test_payload(2_000_000_000);
+            payload.usage_quota = quota.clone();
+            let signature = signing_key.sign(&payload.to_json_bytes());
+            let token = encode_token(&payload, &signature);
+
+            assert_eq!(
+                verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+                TokenStatus::Valid
+            );
+
+            let (payload_bytes, _) = decode_token(&token).unwrap();
+            let decoded: TokenPayload = serde_json::from_slice(&payload_bytes).unwrap();
+            assert_eq!(decoded.usage_quota, quota);
+        }
+    }
+
+    #[test]
+    fn tampering_with_usage_quota_breaks_signature() {
+        let signing_key = test_keypair();
+        let mut payload = test_payload(2_000_000_000);
+        payload.usage_quota = Some(UsageQuota { metric: "api_calls".into(), limit: 100, period_secs: None });
+        let signature = signing_key.sign(&payload.to_json_bytes());
+
+        let mut forged = payload.clone();
+        forged.usage_quota = Some(UsageQuota { metric: "api_calls".into(), limit: 1_000_000, period_secs: None });
+        let forged_token = encode_token(&forged, &signature); // та же подпись, подменён лимит
+
+        assert_eq!(
+            verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::BadSignature,
+            "подмена лимита без новой подписи должна провалить проверку"
         );
     }
 
