@@ -12,10 +12,10 @@ import (
 
 func main() {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: demo <lib-dir> <string-a> <string-b>")
+		fmt.Fprintln(os.Stderr, "usage: demo <lib-dir> <token> <pubkey-hex>")
 		os.Exit(2)
 	}
-	libDir, a, b := os.Args[1], os.Args[2], os.Args[3]
+	libDir, token, pubkeyHex := os.Args[1], os.Args[2], os.Args[3]
 
 	v, err := keyforgeshield.New(libDir)
 	if err != nil {
@@ -24,5 +24,5 @@ func main() {
 	}
 
 	fmt.Println("mode:", v.Mode())
-	fmt.Println("match:", v.Verify(a, b))
+	fmt.Println("status:", v.Verify(token, pubkeyHex))
 }

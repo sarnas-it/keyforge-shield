@@ -16,8 +16,32 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-type verifyStringsFunc func(a, b string) int32
+type verifyTokenFunc func(token, pubkeyHex string) int32
 type hardeningProbeFunc func() int32
+
+// Status — результат верификации токена, зеркало кодов возврата
+// keyforge_verify_token в core/rust/src/lib.rs.
+type Status int
+
+const (
+	StatusMalformed    Status = -1
+	StatusBadSignature Status = 0
+	StatusValid        Status = 1
+	StatusExpired      Status = 2
+)
+
+func (s Status) String() string {
+	switch s {
+	case StatusValid:
+		return "valid"
+	case StatusExpired:
+		return "expired"
+	case StatusBadSignature:
+		return "bad-signature"
+	default:
+		return "malformed"
+	}
+}
 
 // Mode сообщает, в каком режиме работает SDK — для логирования и для того,
 // чтобы продукт-интегратор мог честно показать пользователю, что он получил.
@@ -37,9 +61,9 @@ func (m Mode) String() string {
 
 // Verifier — загруженный core (обязательно) + опционально hardening.
 type Verifier struct {
-	verify  verifyStringsFunc
-	probe   hardeningProbeFunc
-	mode    Mode
+	verify verifyTokenFunc
+	probe  hardeningProbeFunc
+	mode   Mode
 }
 
 func coreLibName() string {
@@ -78,7 +102,7 @@ func New(libDir string) (*Verifier, error) {
 	}
 
 	v := &Verifier{mode: ModeOpenCore}
-	purego.RegisterLibFunc(&v.verify, coreLib, "verify_strings")
+	purego.RegisterLibFunc(&v.verify, coreLib, "keyforge_verify_token")
 
 	hardeningPath := filepath.Join(libDir, hardeningLibName())
 	hardeningLib, err := purego.Dlopen(hardeningPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
@@ -102,10 +126,11 @@ func (v *Verifier) Mode() Mode {
 	return v.mode
 }
 
-// Verify — эталонная проверка (в прототипе — сравнение строк, в проде —
-// разбор и проверка подписанного токена). Hardening-слой, если активен,
-// в реальной реализации будет оборачивать этот вызов своими побочными
-// проверками; в прототипе он не влияет на результат.
-func (v *Verifier) Verify(a, b string) bool {
-	return v.verify(a, b) == 1
+// Verify — проверка Ed25519-подписанного лицензионного токена против
+// публичного ключа (hex, 32 байта), встроенного в бинарь. Hardening-слой,
+// если активен, в реальной реализации будет оборачивать этот вызов своими
+// побочными проверками (тайминг, целостность); в прототипе он не влияет
+// на результат — только сигнализирует о своём присутствии через Mode().
+func (v *Verifier) Verify(token, pubkeyHex string) Status {
+	return Status(v.verify(token, pubkeyHex))
 }
