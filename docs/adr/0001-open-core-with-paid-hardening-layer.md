@@ -95,18 +95,22 @@
   разборе рынка; закрытый чужой слой убивает саму идею открытого core и
   добавляет vendor lock-in на продукт, который продаём как свой.
 
-## Структура прототипа после решения
+## Структура после решения
+
+Два репозитория с первого коммита, не один монорепо с последующим разделением:
 
 ```
-keyforge-shield/
-├── docs/adr/0001-...md        — этот документ
-├── core/                      — OPEN SOURCE (Apache-2.0)
-│   ├── rust/                  — Rust-крейт, C ABI, верификация токена
-│   └── go/                    — эталонный Go-SDK (purego, graceful fallback)
-└── hardening-stub/            — ЗАГОТОВКА платного слоя (не публикуется в OSS-репо)
-    └── rust/                  — демонстрационный стаб анти-tamper пробы
+github.com/sarnas-it/keyforge-shield              — PUBLIC (Apache-2.0)
+├── docs/adr/0001-...md
+├── core/rust/                                     — C ABI, верификация токена
+└── core/go/                                       — эталонный Go-SDK
+
+github.com/sarnas-it/keyforge-shield-hardening     — PRIVATE
+└── rust/                                           — анти-tamper слой
+                                                       (сейчас: stub-заготовка
+                                                        контракта загрузки)
 ```
 
-В реальном релизе `hardening-stub/` переезжает в отдельный приватный
-репозиторий с собственным pipeline сборки и доставки; в прототипе оставлен
-рядом для демонстрации контракта загрузки.
+Контракт между ними — только runtime (`purego.Dlopen` best-effort из core/go,
+проверка ABI-версии через `keyforge_core_abi_version()`), никакой compile-time
+зависимости публичного репозитория от приватного.
