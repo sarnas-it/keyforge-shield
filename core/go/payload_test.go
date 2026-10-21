@@ -8,6 +8,11 @@ import "testing"
 // а не только Go-зеркало структуры само с собой.
 const realSignedToken = "eyJwcm9kdWN0IjoiZGVtby1wcm9kdWN0IiwiZWRpdGlvbiI6InBybyIsImNsaWVudCI6ImFjbWUtY29ycCIsImxpY2Vuc2VfaWQiOiJzZWF0LTAwNDIiLCJpc3N1ZWRfYXQiOjE3OTI2MDIwMjUsImV4cGlyZXNfYXQiOjE3OTI2MDU2MjUsImdyYWNlX3BlcmlvZF9zZWNzIjowLCJzZWF0X21vZGUiOnsibW9kZSI6Im5hbWVkX3VzZXJzIiwiY291bnQiOjN9LCJ1c2FnZV9xdW90YSI6eyJtZXRyaWMiOiJhcGlfY2FsbHMiLCJsaW1pdCI6NSwicGVyaW9kX3NlY3MiOm51bGx9fQ.PE512uM_XtXt7mVjT0_s5DrhI-3w0IwjAnOmJ5_95ZPJcYAEd9kwmN4sT9sDydzzCk17CAMouBjVxnPrL9m3Dg"
 
+// Выпущен issue-demo-token с features="sso,audit_log" (ABI 5) -
+// проверяет, что BTreeSet на стороне Rust сериализуется в канонически
+// отсортированный JSON-массив, который Go читает как обычный []string.
+const tokenWithFeatures = "eyJwcm9kdWN0IjoiZGVtby1wcm9kdWN0IiwiZWRpdGlvbiI6InBybyIsImNsaWVudCI6ImFjbWUtY29ycCIsImxpY2Vuc2VfaWQiOiJzZWF0LTAwOTkiLCJpc3N1ZWRfYXQiOjE3OTI2MDI0MjAsImV4cGlyZXNfYXQiOjE3OTI2MDYwMjAsImdyYWNlX3BlcmlvZF9zZWNzIjowLCJzZWF0X21vZGUiOnsibW9kZSI6InVuYm91bmQifSwidXNhZ2VfcXVvdGEiOm51bGwsImZlYXR1cmVzIjpbImF1ZGl0X2xvZyIsInNzbyJdfQ.9HSsvgKi-5YFshwixq4UiP0OuyHm9PQIn5Cpi1FHkazKCTQUp7dPvizSsg3Fu9-8eHG3KPFv_PK5Wku4sKwOCg"
+
 func TestDecodePayloadReadsRealRustSignedToken(t *testing.T) {
 	p, err := DecodePayload(realSignedToken)
 	if err != nil {
@@ -100,5 +105,43 @@ func TestDecodeThenCheckEndToEnd(t *testing.T) {
 	}
 	if CheckUsageQuota(5, p.UsageQuota) {
 		t.Error("5 used against api_calls:5 (limit reached) should be rejected for the 6th call")
+	}
+}
+
+func TestDecodePayloadReadsFeaturesFromRealToken(t *testing.T) {
+	p, err := DecodePayload(tokenWithFeatures)
+	if err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if !HasFeature(p.Features, "sso") {
+		t.Errorf("expected feature sso in %v", p.Features)
+	}
+	if !HasFeature(p.Features, "audit_log") {
+		t.Errorf("expected feature audit_log in %v", p.Features)
+	}
+	if HasFeature(p.Features, "enterprise_sso") {
+		t.Errorf("did not expect enterprise_sso in %v", p.Features)
+	}
+}
+
+func TestHasFeatureOnEmptyOrNilSet(t *testing.T) {
+	if HasFeature(nil, "anything") {
+		t.Error("nil features (older token without the field) must not have any feature")
+	}
+	if HasFeature([]string{}, "anything") {
+		t.Error("empty features must not have any feature")
+	}
+}
+
+func TestDecodePayloadOnOlderTokenWithoutFeaturesField(t *testing.T) {
+	// realSignedToken был выпущен до появления оси features (ABI 4) -
+	// проверяет обратную совместимость декодирования: отсутствующее поле
+	// не должно давать ошибку, просто nil-слайс.
+	p, err := DecodePayload(realSignedToken)
+	if err != nil {
+		t.Fatalf("DecodePayload on a pre-features token: %v", err)
+	}
+	if HasFeature(p.Features, "anything") {
+		t.Error("a token issued before ABI 5 cannot have any feature")
 	}
 }

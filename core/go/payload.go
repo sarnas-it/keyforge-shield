@@ -24,6 +24,12 @@ type Payload struct {
 	GracePeriodSecs uint64     `json:"grace_period_secs"`
 	SeatMode        SeatMode   `json:"seat_mode"`
 	UsageQuota      *UsageInfo `json:"usage_quota"`
+	// Features — ось "продукт/функциональность" сверху Edition: отдельные
+	// a-la-carte модули/возможности, независимые от пресета Edition.
+	// core сериализует множество в канонически отсортированный JSON-массив
+	// (BTreeSet на стороне Rust) — здесь обычный []string, сравнивать
+	// принадлежность через HasFeature, не вручную по индексу.
+	Features []string `json:"features"`
 }
 
 // SeatMode зеркалит core/rust/src/token.rs::SeatMode (serde tag="mode").

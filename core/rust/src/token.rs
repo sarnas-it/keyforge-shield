@@ -11,6 +11,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenPayload {
@@ -68,6 +69,20 @@ pub struct TokenPayload {
     /// клиента, нужен online-тип ключей с серверным счётчиком, не
     /// реализован.
     pub usage_quota: Option<UsageQuota>,
+    /// Ось "продукт/функциональность" сверху `edition`: `edition` — это
+    /// целиком пресет ("basic"/"pro"/"enterprise" — набор, который
+    /// продукт сам интерпретирует), `features` — a-la-carte отдельные
+    /// модули/возможности внутри одного edition, независимо
+    /// переключаемые (например edition="pro" + features={"sso",
+    /// "audit_log"}). Пустое множество — без дополнительных фич сверх
+    /// того, что подразумевает edition.
+    ///
+    /// BTreeSet, не Vec: нет смысловой разницы в порядке, канонический
+    /// порядок при сериализации избавляет от случайных различий байтов
+    /// payload между одинаковыми по смыслу токенами, выпущенными в
+    /// разном порядке аргументов. core не знает семантику имён фич —
+    /// как и metric в UsageQuota, их значение решает продукт-интегратор.
+    pub features: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +196,7 @@ mod tests {
             grace_period_secs: 0,
             seat_mode: SeatMode::NamedUsers { count: 1 },
             usage_quota: None,
+            features: BTreeSet::new(),
         }
     }
 
@@ -381,6 +397,43 @@ mod tests {
             verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
             TokenStatus::BadSignature,
             "подмена лимита без новой подписи должна провалить проверку"
+        );
+    }
+
+    #[test]
+    fn features_round_trip_through_signed_payload() {
+        let signing_key = test_keypair();
+        let mut payload = test_payload(2_000_000_000);
+        payload.features = BTreeSet::from(["sso".to_string(), "audit_log".to_string()]);
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        assert_eq!(
+            verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::Valid
+        );
+
+        let (payload_bytes, _) = decode_token(&token).unwrap();
+        let decoded: TokenPayload = serde_json::from_slice(&payload_bytes).unwrap();
+        assert_eq!(decoded.features, payload.features);
+    }
+
+    #[test]
+    fn tampering_with_features_breaks_signature() {
+        // Как и остальные оси: нельзя дописать себе фичу без новой подписи.
+        let signing_key = test_keypair();
+        let mut payload = test_payload(2_000_000_000);
+        payload.features = BTreeSet::from(["basic_reports".to_string()]);
+        let signature = signing_key.sign(&payload.to_json_bytes());
+
+        let mut forged = payload.clone();
+        forged.features.insert("enterprise_sso".to_string());
+        let forged_token = encode_token(&forged, &signature); // та же подпись, лишняя фича
+
+        assert_eq!(
+            verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::BadSignature,
+            "добавление фичи без новой подписи должно провалить проверку"
         );
     }
 

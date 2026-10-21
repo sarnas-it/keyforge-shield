@@ -70,9 +70,11 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 /// hardening-слой мог логировать факт обновления контракта.
 /// 4: добавлено поле payload usage_quota (Option) — тоже аддитивно,
 /// коды возврата не менялись.
+/// 5: добавлено поле payload features (BTreeSet<String>, по умолчанию
+/// пустое множество) — тоже аддитивно, коды возврата не менялись.
 #[no_mangle]
 pub extern "C" fn keyforge_core_abi_version() -> i32 {
-    4
+    5
 }
 
 #[cfg(test)]
@@ -95,6 +97,7 @@ mod ffi_tests {
             grace_period_secs: 0,
             seat_mode: SeatMode::NamedUsers { count: 1 },
             usage_quota: None,
+            features: Default::default(),
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
@@ -121,7 +124,7 @@ mod ffi_tests {
 
     #[test]
     fn reports_abi_version() {
-        assert_eq!(keyforge_core_abi_version(), 4);
+        assert_eq!(keyforge_core_abi_version(), 5);
     }
 
     #[test]
@@ -137,6 +140,7 @@ mod ffi_tests {
             grace_period_secs: 3600,                   // но внутри grace
             seat_mode: SeatMode::Unbound,
             usage_quota: None,
+            features: Default::default(),
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);

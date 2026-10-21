@@ -58,3 +58,17 @@ func CheckUsageQuota(reportedUsage uint64, quota *UsageInfo) bool {
 	}
 	return reportedUsage < quota.Limit
 }
+
+// HasFeature сообщает, включена ли name в подписанном множестве features.
+// В отличие от CheckSeatCount/CheckUsageQuota, здесь нет самоотчёта
+// продукта — features это статически объявленное в токене множество,
+// сравнение идёт прямо с тем, что подписано, без недоверенного
+// промежуточного значения.
+func HasFeature(features []string, name string) bool {
+	for _, f := range features {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
