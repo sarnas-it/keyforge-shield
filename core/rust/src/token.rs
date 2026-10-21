@@ -17,6 +17,18 @@ pub struct TokenPayload {
     pub product: String,
     pub edition: String,
     pub client: String,
+    /// Водяной знак выдачи, отдельно от имени клиента: `client` отличает
+    /// компании друг от друга, `license_id` отличает конкретную выдачу
+    /// (место/машину/сотрудника) внутри одного клиента. Нужно для разбора
+    /// инцидента утечки — "у клиента А утёк токен" и "у клиента А утёк
+    /// именно токен места №7, выданный такого-то числа" — два разных
+    /// объёма ответственности и разных следующих шагов.
+    ///
+    /// Поле открытое (не шифруется) — это осознанно: клиент видит, что
+    /// его конкретная копия помечена, это и есть сдерживающий эффект.
+    /// Подделать/вырезать нельзя — поле входит в подписанный payload,
+    /// изменение рушит подпись без приватного ключа.
+    pub license_id: String,
     pub issued_at: u64,
     pub expires_at: u64,
 }
@@ -92,6 +104,7 @@ mod tests {
             product: "demo-product".into(),
             edition: "pro".into(),
             client: "test-client".into(),
+            license_id: "seat-0001".into(),
             issued_at: 1_700_000_000,
             expires_at,
         }
@@ -143,6 +156,33 @@ mod tests {
         // Проверяем подписью от signing_key, но публичным ключом от другой пары.
         let status = verify(&token, &other_key.verifying_key(), 1_800_000_000);
         assert_eq!(status, TokenStatus::BadSignature);
+    }
+
+    #[test]
+    fn tampering_with_license_id_breaks_signature() {
+        // Ключевое свойство водяного знака: нельзя переклеить license_id
+        // на другой (например, чтобы скрыть, с какого места утекла копия)
+        // без приватного ключа — payload подписан целиком, license_id в
+        // него входит на равных с остальными полями.
+        let signing_key = test_keypair();
+        let payload = test_payload(2_000_000_000);
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        let mut forged_payload = payload.clone();
+        forged_payload.license_id = "seat-9999".into();
+        let forged_token = encode_token(&forged_payload, &signature); // та же подпись, другие данные
+
+        assert_eq!(
+            verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::BadSignature,
+            "подмена license_id без новой подписи должна провалить проверку"
+        );
+        // Контроль: исходный токен с исходным license_id всё ещё валиден.
+        assert_eq!(
+            verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::Valid
+        );
     }
 
     #[test]

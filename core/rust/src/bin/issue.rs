@@ -10,15 +10,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 5 {
+    if args.len() != 6 {
         eprintln!(
-            "usage: {} <product> <edition> <client> <ttl-seconds>",
+            "usage: {} <product> <edition> <client> <license-id> <ttl-seconds>",
             args[0]
+        );
+        eprintln!(
+            "  <license-id> — водяной знак конкретной выдачи (место/машина), \
+             не имя клиента. Пример: seat-0007"
         );
         std::process::exit(2);
     }
-    let (product, edition, client) = (args[1].clone(), args[2].clone(), args[3].clone());
-    let ttl_seconds: u64 = args[4].parse().expect("ttl-seconds must be a number");
+    let (product, edition, client, license_id) =
+        (args[1].clone(), args[2].clone(), args[3].clone(), args[4].clone());
+    let ttl_seconds: u64 = args[5].parse().expect("ttl-seconds must be a number");
 
     let signing_key = SigningKey::generate(&mut OsRng);
     let now = SystemTime::now()
@@ -30,6 +35,7 @@ fn main() {
         product,
         edition,
         client,
+        license_id,
         issued_at: now,
         expires_at: now + ttl_seconds,
     };

@@ -80,6 +80,7 @@ mod ffi_tests {
             product: "demo".into(),
             edition: "pro".into(),
             client: "ffi-test".into(),
+            license_id: "seat-ffi".into(),
             issued_at: 0,
             expires_at: now_unix() + 3600,
         };
