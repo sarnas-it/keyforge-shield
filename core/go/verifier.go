@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/ebitengine/purego"
 )
@@ -146,10 +147,57 @@ func (v *Verifier) Mode() Mode {
 }
 
 // Verify — проверка Ed25519-подписанного лицензионного токена против
-// публичного ключа (hex, 32 байта), встроенного в бинарь. Hardening-слой,
-// если активен, в реальной реализации будет оборачивать этот вызов своими
-// побочными проверками (тайминг, целостность); в прототипе он не влияет
-// на результат — только сигнализирует о своём присутствии через Mode().
+// публичного ключа (hex, 32 байта), встроенного в бинарь. В hardened-режиме
+// сам вызов проходит через трамплин/тайминг/integrity-проверки внутри
+// hardening.so — это защищено автоматически, клиент ничего для этого не
+// делает. Вопрос "когда вызывать Verify()" — отдельный, решается на
+// уровне Go-кода продукта: см. Guard/StartAutoRecheck ниже, которые снимают
+// с клиента необходимость руками расставлять if-ы и тикеры по коду.
 func (v *Verifier) Verify(token, pubkeyHex string) Status {
 	return Status(v.verify(token, pubkeyHex))
+}
+
+// Guard оборачивает fn проверкой лицензии: перед вызовом fn проверяет
+// токен и, если статус не Valid, вызывает onFail вместо fn. Снимает с
+// клиента необходимость писать `if status := verifier.Verify(...); ...`
+// в каждом месте, которое нужно защитить — остаётся просто решить, ЧТО
+// оборачивать, не писать boilerplate самой проверки на каждом месте.
+//
+// Это не делает точки вызова непредсказуемыми — клиент всё равно сам
+// решает, какие функции оборачивать, и это видно по коду продукта. Для
+// защиты от предсказуемости точек нужен build-time инструмент, который
+// расставляет это автоматически (отдельная, более крупная задача,
+// не часть этого SDK сейчас).
+func (v *Verifier) Guard(token, pubkeyHex string, onFail func(Status), fn func()) {
+	if status := v.Verify(token, pubkeyHex); status != StatusValid {
+		onFail(status)
+		return
+	}
+	fn()
+}
+
+// StartAutoRecheck поднимает фоновую горутину, которая вызывает Verify()
+// каждые interval и передаёт результат в onResult — в т.ч. StatusValid,
+// чтобы вызывающая сторона сама решала, логировать ли успешные проверки.
+// Снимает с клиента необходимость писать собственный time.Ticker только
+// для периодической ре-верификации (см. license.go/runApplication в
+// examples/sample-product — до этого изменения тикер был там руками).
+//
+// Возвращает stop(), который останавливает горутину; вызывать обязательно
+// (например через defer), иначе горутина живёт до конца процесса.
+func (v *Verifier) StartAutoRecheck(token, pubkeyHex string, interval time.Duration, onResult func(Status)) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				onResult(v.Verify(token, pubkeyHex))
+			}
+		}
+	}()
+	return func() { close(done) }
 }

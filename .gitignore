@@ -1,5 +1,6 @@
 target/
 /core/go/demo
+/core/go/examples/sample-product/sample-product
 *.so
 *.dylib
 *.dll
