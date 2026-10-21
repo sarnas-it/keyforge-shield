@@ -1,0 +1,5 @@
+target/
+/core/go/demo
+*.so
+*.dylib
+*.dll

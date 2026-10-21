@@ -1,0 +1,15 @@
+[package]
+name = "keyforge_core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "keyforge-shield open core: reference Ed25519 token/string verification, C ABI"
+
+[lib]
+name = "keyforge_core"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+lto = true
+strip = true

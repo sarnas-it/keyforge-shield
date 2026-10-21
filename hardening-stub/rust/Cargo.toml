@@ -1,0 +1,18 @@
+[package]
+name = "keyforge_hardening_stub"
+version = "0.1.0"
+edition = "2021"
+# НЕ open source. В реальном релизе этот крейт живёт в отдельном приватном
+# репозитории и распространяется клиентам только компилированным артефактом
+# (см. docs/adr/0001-open-core-with-paid-hardening-layer.md).
+publish = false
+description = "keyforge-shield hardening stub — placeholder for the paid, closed anti-tamper layer"
+
+[lib]
+name = "keyforge_hardening_stub"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+lto = true
+strip = true
