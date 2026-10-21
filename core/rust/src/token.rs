@@ -83,6 +83,27 @@ pub struct TokenPayload {
     /// разном порядке аргументов. core не знает семантику имён фич —
     /// как и metric в UsageQuota, их значение решает продукт-интегратор.
     pub features: BTreeSet<String>,
+    /// Онлайн-тип ключа. `None` — обычный офлайн-ключ (подпись проверяется
+    /// локально, отозвать технически нельзя). `Some` — ключ требует
+    /// периодического подтверждения у сервера выдачи: продукт-интегратор
+    /// запрашивает подписанную "аренду" (lease) и работает, пока она
+    /// действует; отзыв вступает в силу не позже конца текущей аренды.
+    ///
+    /// Поле входит в подписанный payload: клиент не может превратить
+    /// онлайн-ключ в офлайн, убрав его, не сломав подпись. core только
+    /// переносит значение — проверку аренды делает Go SDK
+    /// (`CheckOnline`/`Lease.Verify`). Старые токены без поля читаются как
+    /// `None` (отсутствующий Option десериализуется в None).
+    #[serde(default)]
+    pub online: Option<OnlineMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OnlineMode {
+    /// Максимальный возраст подтверждения сервера, секунды: на столько
+    /// выдаётся аренда. Меньше — быстрее действует отзыв, но чаще нужна
+    /// связь; допустимый диапазон ограничивает выпускающая сторона.
+    pub lease_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,6 +218,7 @@ mod tests {
             seat_mode: SeatMode::NamedUsers { count: 1 },
             usage_quota: None,
             features: BTreeSet::new(),
+            online: None,
         }
     }
 
@@ -434,6 +456,57 @@ mod tests {
             verify(&forged_token, &signing_key.verifying_key(), 1_800_000_000),
             TokenStatus::BadSignature,
             "добавление фичи без новой подписи должно провалить проверку"
+        );
+    }
+
+    #[test]
+    fn online_mode_round_trips_and_is_signed() {
+        let signing_key = test_keypair();
+        let mut payload = test_payload(2_000_000_000);
+        payload.online = Some(OnlineMode { lease_secs: 3600 });
+        let signature = signing_key.sign(&payload.to_json_bytes());
+        let token = encode_token(&payload, &signature);
+
+        assert_eq!(
+            verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::Valid
+        );
+        let (bytes, _) = decode_token(&token).unwrap();
+        let decoded: TokenPayload = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.online, Some(OnlineMode { lease_secs: 3600 }));
+    }
+
+    #[test]
+    fn stripping_online_mode_breaks_signature() {
+        // Нельзя превратить онлайн-ключ в офлайн, убрав поле.
+        let signing_key = test_keypair();
+        let mut payload = test_payload(2_000_000_000);
+        payload.online = Some(OnlineMode { lease_secs: 3600 });
+        let signature = signing_key.sign(&payload.to_json_bytes());
+
+        let mut stripped = payload.clone();
+        stripped.online = None;
+        let forged = encode_token(&stripped, &signature);
+        assert_eq!(
+            verify(&forged, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::BadSignature
+        );
+    }
+
+    #[test]
+    fn token_without_online_field_is_read_as_offline() {
+        // Токен, выпущенный до появления поля (ABI 5), остаётся валидным.
+        let signing_key = test_keypair();
+        let legacy = br#"{"product":"p","edition":"e","client":"c","license_id":"l","issued_at":1,"expires_at":2000000000,"grace_period_secs":0,"seat_mode":{"mode":"unbound"},"usage_quota":null,"features":[]}"#;
+        let signature = signing_key.sign(legacy);
+        let token = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(legacy),
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
+        assert_eq!(
+            verify(&token, &signing_key.verifying_key(), 1_800_000_000),
+            TokenStatus::Valid
         );
     }
 

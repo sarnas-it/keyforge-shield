@@ -6,7 +6,7 @@
 // и не требует её присутствия.
 
 mod token;
-pub use token::{encode_token, SeatMode, TokenPayload, TokenStatus, UsageQuota};
+pub use token::{encode_token, OnlineMode, SeatMode, TokenPayload, TokenStatus, UsageQuota};
 
 use ed25519_dalek::VerifyingKey;
 use std::ffi::CStr;
@@ -72,9 +72,11 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 /// коды возврата не менялись.
 /// 5: добавлено поле payload features (BTreeSet<String>, по умолчанию
 /// пустое множество) — тоже аддитивно, коды возврата не менялись.
+/// 6: добавлено поле payload online (Option<OnlineMode>) — онлайн-ключи;
+/// аддитивно, старые токены читаются как офлайн.
 #[no_mangle]
 pub extern "C" fn keyforge_core_abi_version() -> i32 {
-    5
+    6
 }
 
 #[cfg(test)]
@@ -98,6 +100,7 @@ mod ffi_tests {
             seat_mode: SeatMode::NamedUsers { count: 1 },
             usage_quota: None,
             features: Default::default(),
+            online: None,
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
@@ -124,7 +127,7 @@ mod ffi_tests {
 
     #[test]
     fn reports_abi_version() {
-        assert_eq!(keyforge_core_abi_version(), 5);
+        assert_eq!(keyforge_core_abi_version(), 6);
     }
 
     #[test]
@@ -141,6 +144,7 @@ mod ffi_tests {
             seat_mode: SeatMode::Unbound,
             usage_quota: None,
             features: Default::default(),
+            online: None,
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);

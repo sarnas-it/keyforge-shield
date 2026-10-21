@@ -3,7 +3,7 @@
 // Здесь — одноразовая генерация keypair в памяти, чтобы прогнать прототип
 // end-to-end: issue -> verify через C ABI из Go.
 use ed25519_dalek::{Signer, SigningKey};
-use keyforge_core::{SeatMode, TokenPayload, UsageQuota};
+use keyforge_core::{OnlineMode, SeatMode, TokenPayload, UsageQuota};
 use rand::rngs::OsRng;
 use std::collections::BTreeSet;
 use std::env;
@@ -63,9 +63,9 @@ fn parse_features(raw: &str) -> BTreeSet<String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 10 {
+    if args.len() != 11 {
         eprintln!(
-            "usage: {} <product> <edition> <client> <license-id> <ttl-seconds> <grace-seconds> <seat-mode> <usage-quota> <features>",
+            "usage: {} <product> <edition> <client> <license-id> <ttl-seconds> <grace-seconds> <seat-mode> <usage-quota> <features> <online>",
             args[0]
         );
         eprintln!(
@@ -85,6 +85,9 @@ fn main() {
         eprintln!(
             "  <features>     — none | <feature1>,<feature2>,..."
         );
+        eprintln!(
+            "  <online>       — none | <lease-secs> (онлайн-ключ, см. OnlineMode)"
+        );
         std::process::exit(2);
     }
     let (product, edition, client, license_id) =
@@ -94,6 +97,10 @@ fn main() {
     let seat_mode = parse_seat_mode(&args[7]);
     let usage_quota = parse_usage_quota(&args[8]);
     let features = parse_features(&args[9]);
+    let online = match args[10].as_str() {
+        "none" => None,
+        n => Some(OnlineMode { lease_secs: n.parse().expect("online lease-secs must be a number") }),
+    };
 
     let signing_key = SigningKey::generate(&mut OsRng);
     let now = SystemTime::now()
@@ -112,6 +119,7 @@ fn main() {
         seat_mode,
         usage_quota,
         features,
+        online,
     };
 
     let payload_bytes = serde_json::to_vec(&payload).unwrap();

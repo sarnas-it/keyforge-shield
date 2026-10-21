@@ -30,6 +30,15 @@ type Payload struct {
 	// (BTreeSet на стороне Rust) — здесь обычный []string, сравнивать
 	// принадлежность через HasFeature, не вручную по индексу.
 	Features []string `json:"features"`
+	// Online != nil — онлайн-ключ: продукт обязан подтверждать его у
+	// сервера выдачи (CheckOnline) и работать только пока действует
+	// аренда. Поле подписано: убрать его из токена нельзя.
+	Online *OnlineInfo `json:"online,omitempty"`
+}
+
+// OnlineInfo зеркалит core/rust/src/token.rs::OnlineMode.
+type OnlineInfo struct {
+	LeaseSecs uint64 `json:"lease_secs"`
 }
 
 // SeatMode зеркалит core/rust/src/token.rs::SeatMode (serde tag="mode").
