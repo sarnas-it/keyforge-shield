@@ -120,14 +120,13 @@ func newNonce() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// CheckOnline запрашивает у сервера baseURL аренду для token и проверяет
-// её. Ошибка сети/сервера возвращается как error — вызывающий продукт сам
-// решает, продолжать ли работать на ранее сохранённой действующей аренде.
-// Статус ответа (revoked/expired/unknown) — не ошибка: возвращается Lease
-// с этим статусом; пользоваться ключом можно только при Lease.Active.
-//
-// Перед вызовом токен должен пройти Verifier.Verify (подпись и срок).
-func CheckOnline(ctx context.Context, client *http.Client, baseURL, token, pubkeyHex string) (Lease, error) {
+// fetchLease — сетевая часть протокола KFL1: запрос, разбор ответа, сверка
+// nonce. Подлинность самой аренды (подпись, соответствие токену, срок,
+// дрейф часов) здесь НЕ проверяется — это разные пути у двух вызывающих:
+// пакетная CheckOnline (чистый Go, Lease.Verify) и Verifier.CheckOnline
+// (решение через native/hardened core). Вынесено сюда, чтобы протокол
+// запроса не дублировался между ними.
+func fetchLease(ctx context.Context, client *http.Client, baseURL, token string) (Lease, error) {
 	payload, err := DecodePayload(token)
 	if err != nil {
 		return Lease{}, err
@@ -167,6 +166,26 @@ func CheckOnline(ctx context.Context, client *http.Client, baseURL, token, pubke
 	}
 	if lease.Nonce != nonce {
 		return Lease{}, fmt.Errorf("%w: nonce mismatch (replayed or foreign response)", ErrBadLease)
+	}
+	return lease, nil
+}
+
+// CheckOnline запрашивает у сервера baseURL аренду для token и проверяет
+// её чистой Go-реализацией (Lease.Verify). Ошибка сети/сервера возвращается
+// как error — вызывающий продукт сам решает, продолжать ли работать на
+// ранее сохранённой действующей аренде. Статус ответа (revoked/expired/
+// unknown) — не ошибка: возвращается Lease с этим статусом; пользоваться
+// ключом можно только при Lease.Active.
+//
+// Open-core путь: подпись аренды проверяется прямо здесь, в Go. Для
+// hardened-режима, где это решение защищено трамплином/тайминг-
+// инвариантом так же, как Verify(), см. Verifier.CheckOnline.
+//
+// Перед вызовом токен должен пройти Verifier.Verify (подпись и срок).
+func CheckOnline(ctx context.Context, client *http.Client, baseURL, token, pubkeyHex string) (Lease, error) {
+	lease, err := fetchLease(ctx, client, baseURL, token)
+	if err != nil {
+		return Lease{}, err
 	}
 	if err := lease.Verify(pubkeyHex, token); err != nil {
 		return Lease{}, err

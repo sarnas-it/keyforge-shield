@@ -73,8 +73,9 @@ func (m Mode) String() string {
 // адрес), а не прямо на core — весь смысл в том, чтобы реальный вызов
 // проверки шёл через трамплин, а не напрямую.
 type Verifier struct {
-	verify verifyTokenFunc
-	mode   Mode
+	verify      verifyTokenFunc
+	verifyLease leaseVerifyFunc
+	mode        Mode
 }
 
 func coreLibName() string {
@@ -119,6 +120,7 @@ func New(libDir string) (*Verifier, error) {
 
 	v := &Verifier{mode: ModeOpenCore}
 	purego.RegisterLibFunc(&v.verify, coreLib, "keyforge_verify_token")
+	purego.RegisterLibFunc(&v.verifyLease, coreLib, "keyforge_verify_lease")
 
 	hardeningPath := filepath.Join(libDir, hardeningLibName())
 	hardeningLib, err := purego.Dlopen(hardeningPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
@@ -128,7 +130,8 @@ func New(libDir string) (*Verifier, error) {
 	}
 
 	realVerifyAddr, err := purego.Dlsym(coreLib, "keyforge_verify_token")
-	if err != nil || realVerifyAddr == 0 {
+	realLeaseAddr, leaseErr := purego.Dlsym(coreLib, "keyforge_verify_lease")
+	if err != nil || realVerifyAddr == 0 || leaseErr != nil || realLeaseAddr == 0 {
 		// core загружен, но символ не резолвится — деградируем в open-core,
 		// а не паникуем: нет смысла требовать hardening там, где сам core
 		// в нестандартном состоянии.
@@ -139,10 +142,18 @@ func New(libDir string) (*Verifier, error) {
 	purego.RegisterLibFunc(&register, hardeningLib, "keyforge_hardening_register_verify_fn")
 	register(realVerifyAddr)
 
+	var registerLease registerLeaseFnFunc
+	purego.RegisterLibFunc(&registerLease, hardeningLib, "keyforge_hardening_register_lease_fn")
+	registerLease(realLeaseAddr)
+
 	var hardenedVerify verifyTokenFunc
 	purego.RegisterLibFunc(&hardenedVerify, hardeningLib, "keyforge_hardened_verify_token")
 
+	var hardenedVerifyLease leaseVerifyFunc
+	purego.RegisterLibFunc(&hardenedVerifyLease, hardeningLib, "keyforge_hardened_verify_lease")
+
 	v.verify = hardenedVerify
+	v.verifyLease = hardenedVerifyLease
 	v.mode = ModeHardened
 
 	return v, nil
