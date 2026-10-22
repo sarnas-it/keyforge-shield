@@ -167,6 +167,15 @@ fn decode_token(token: &str) -> Option<(Vec<u8>, Signature)> {
     Some((payload_bytes, Signature::from_bytes(&sig_arr)))
 }
 
+/// Разбирает payload токена ТОЛЬКО если подпись верна. Срок действия не
+/// проверяется: аренду онлайн-ключа нужно уметь сверять и с токеном,
+/// срок которого уже вышел (льготный период), решает вызывающая сторона.
+pub fn verified_payload(token: &str, public_key: &VerifyingKey) -> Option<TokenPayload> {
+    let (payload_bytes, signature) = decode_token(token)?;
+    public_key.verify_strict(&payload_bytes, &signature).ok()?;
+    serde_json::from_slice(&payload_bytes).ok()
+}
+
 /// Проверяет токен против публичного ключа и текущего unix-времени.
 /// Порядок важен: подпись проверяется ДО разбора полей payload — иначе
 /// можно было бы судить о содержимом неподписанных/подделанных данных

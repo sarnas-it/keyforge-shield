@@ -5,6 +5,7 @@
 // отдельный репозиторий) — опциональная надстройка сверху; core не деградирует
 // и не требует её присутствия.
 
+mod lease;
 mod token;
 pub use token::{encode_token, OnlineMode, SeatMode, TokenPayload, TokenStatus, UsageQuota};
 
@@ -60,6 +61,76 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
     }
 }
 
+/// Запрос на проверку аренды онлайн-ключа: одна структура вместо дюжины
+/// аргументов. Через hardening-слой функция вызывается машинным трамплином,
+/// который сохраняет и подменяет адрес возврата и передаёт аргументы
+/// регистрами; указатель на структуру — единственный аргумент, и порядок
+/// полей (repr(C)) — часть ABI. Строки — NUL-терминированные UTF-8.
+#[repr(C)]
+pub struct KfLeaseRequest {
+    pub token: *const c_char,
+    pub pubkey_hex: *const c_char,
+    pub license_id: *const c_char,
+    pub status: *const c_char,
+    pub checked_at: i64,
+    pub valid_until: i64,
+    pub nonce: *const c_char,
+    pub signature_b64: *const c_char,
+    pub now_unix: i64,
+    /// bit0 — свежий ответ сервера (проверять расхождение часов).
+    pub flags: i32,
+}
+
+/// Проверяет аренду онлайн-ключа. Коды возврата:
+///   1  — аренда подлинна и ключ действует сейчас
+///   2  — аренда подлинна, но ключ не действует (revoked/expired/unknown,
+///        срок вышел, часы откатывали)
+///   0  — подпись аренды неверна
+///  -1  — вход не распознан или противоречит токену (чужая лицензия,
+///        аренда длиннее потолка в токене, офлайн-токен, токен чужой подписи)
+///
+/// Весь путь без unwrap/expect/panic (крейт собран с panic = "abort").
+#[no_mangle]
+pub extern "C" fn keyforge_verify_lease(req: *const KfLeaseRequest) -> i32 {
+    if req.is_null() {
+        return lease::LEASE_INVALID;
+    }
+    let r = unsafe { &*req };
+    let s = |p: *const c_char| -> Option<&str> {
+        if p.is_null() {
+            None
+        } else {
+            unsafe { CStr::from_ptr(p) }.to_str().ok()
+        }
+    };
+    let parsed = (|| {
+        let pubkey = VerifyingKey::from_bytes(&decode_hex32(s(r.pubkey_hex)?)?).ok()?;
+        Some((
+            pubkey,
+            s(r.token)?,
+            s(r.license_id)?,
+            s(r.status)?,
+            s(r.nonce)?,
+            s(r.signature_b64)?,
+        ))
+    })();
+    let Some((pubkey, token, license_id, status, nonce, signature_b64)) = parsed else {
+        return lease::LEASE_INVALID;
+    };
+    lease::verify_lease(&lease::LeaseInput {
+        token,
+        pubkey: &pubkey,
+        license_id,
+        status,
+        checked_at: r.checked_at,
+        valid_until: r.valid_until,
+        nonce,
+        signature_b64,
+        now: r.now_unix,
+        fresh: r.flags & 1 != 0,
+    })
+}
+
 /// Версия ABI-контракта core-библиотеки. Hardening-слой при загрузке
 /// проверяет совместимость через эту константу, а не наоборот — core
 /// ничего не знает про hardening и не ссылается на него напрямую.
@@ -74,9 +145,10 @@ pub extern "C" fn keyforge_verify_token(token: *const c_char, pubkey_hex: *const
 /// пустое множество) — тоже аддитивно, коды возврата не менялись.
 /// 6: добавлено поле payload online (Option<OnlineMode>) — онлайн-ключи;
 /// аддитивно, старые токены читаются как офлайн.
+/// 7: добавлена функция keyforge_verify_lease (нативная проверка аренды).
 #[no_mangle]
 pub extern "C" fn keyforge_core_abi_version() -> i32 {
-    6
+    7
 }
 
 #[cfg(test)]
@@ -85,6 +157,7 @@ mod ffi_tests {
     use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
     use std::ffi::CString;
+    use crate::OnlineMode;
 
     #[test]
     fn ffi_roundtrip_valid_token() {
@@ -127,7 +200,7 @@ mod ffi_tests {
 
     #[test]
     fn reports_abi_version() {
-        assert_eq!(keyforge_core_abi_version(), 6);
+        assert_eq!(keyforge_core_abi_version(), 7);
     }
 
     #[test]
@@ -154,5 +227,57 @@ mod ffi_tests {
         let pubkey_c = CString::new(hex::encode(signing_key.verifying_key().to_bytes())).unwrap();
 
         assert_eq!(keyforge_verify_token(token_c.as_ptr(), pubkey_c.as_ptr()), 3);
+    }
+
+    #[test]
+    fn ffi_verify_lease_end_to_end_through_the_c_abi() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let key = SigningKey::generate(&mut OsRng);
+        let now = now_unix() as i64;
+        let payload = TokenPayload {
+            product: "demo".into(),
+            edition: "pro".into(),
+            client: "ffi".into(),
+            license_id: "seat-0123456789abcdef".into(),
+            issued_at: 0,
+            expires_at: now as u64 + 86_400,
+            grace_period_secs: 0,
+            seat_mode: SeatMode::Unbound,
+            usage_quota: None,
+            features: Default::default(),
+            online: Some(OnlineMode { lease_secs: 3600 }),
+        };
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let token = token::encode_token(&payload, &key.sign(&bytes));
+        let canon = format!("KFL1\nseat-0123456789abcdef\nactive\n{now}\n{}\nnonce-0123456789abcdef", now + 3600);
+        let sig = URL_SAFE_NO_PAD.encode(key.sign(canon.as_bytes()).to_bytes());
+
+        let token_c = CString::new(token).unwrap();
+        let pub_c = CString::new(hex::encode(key.verifying_key().to_bytes())).unwrap();
+        let id_c = CString::new("seat-0123456789abcdef").unwrap();
+        let status_c = CString::new("active").unwrap();
+        let nonce_c = CString::new("nonce-0123456789abcdef").unwrap();
+        let sig_c = CString::new(sig).unwrap();
+        let mut req = KfLeaseRequest {
+            token: token_c.as_ptr(),
+            pubkey_hex: pub_c.as_ptr(),
+            license_id: id_c.as_ptr(),
+            status: status_c.as_ptr(),
+            checked_at: now,
+            valid_until: now + 3600,
+            nonce: nonce_c.as_ptr(),
+            signature_b64: sig_c.as_ptr(),
+            now_unix: now,
+            flags: 1,
+        };
+        assert_eq!(keyforge_verify_lease(&req), 1);
+
+        let revoked_c = CString::new("revoked").unwrap();
+        req.status = revoked_c.as_ptr(); // статус подписан как active: правка ломает подпись
+        assert_eq!(keyforge_verify_lease(&req), 0);
+
+        assert_eq!(keyforge_verify_lease(std::ptr::null()), -1);
+        req.status = std::ptr::null();
+        assert_eq!(keyforge_verify_lease(&req), -1, "a null field must be refused, not dereferenced");
     }
 }
