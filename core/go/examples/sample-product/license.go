@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	keyforgeshield "code.sarnas.ru/keyforge-shield/core/go"
+	keyforgeshield "github.com/sarnas-it/keyforge-shield/core/go"
 )
 
 // productPublicKeyHex — Ed25519 публичный ключ ПРОДУКТА (не keyforge, у

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	keyforgeshield "code.sarnas.ru/keyforge-shield/core/go"
+	keyforgeshield "github.com/sarnas-it/keyforge-shield/core/go"
 )
 
 func main() {
