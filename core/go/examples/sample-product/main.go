@@ -20,9 +20,9 @@ import (
 	"os"
 	"time"
 
-	keyforgeshield "github.com/sarnas-it/keyforge-shield/core/go"
+	keyforgeshield "code.sarnas.ru/keyforge-shield/core/go"
 
-	"github.com/sarnas-it/keyforge-shield/core/go/examples/sample-product/nativelib"
+	"code.sarnas.ru/keyforge-shield/core/go/examples/sample-product/nativelib"
 )
 
 var telemetrySink = os.Stderr
